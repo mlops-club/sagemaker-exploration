@@ -2,7 +2,7 @@
 
 set -ex
 
-export AWS_PROFILE=sbox
+export AWS_PROFILE=mlops-club
 export SAGEMAKER_DOMAIN_ID=d-qt4dkqxcevqe
 export AWS_REGION=us-east-1
 
@@ -10,6 +10,16 @@ export AWS_REGION=us-east-1
 LAMBDA_FN_S3_BUCKET=sagemaker-test-bucket-mc
 
 THIS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+function cdk_bootstrap () {
+    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    cdk bootstrap "aws://${AWS_ACCOUNT_ID}/${AWS_REGION}"
+}
+
+function cdk_deploy () {
+    cd "${THIS_DIR}/infra"
+    uv run -- cdk deploy '*' --profile $AWS_PROFILE --region $AWS_REGION
+}
 
 function create_gh_personal_access_token_secret () {
     source .env
