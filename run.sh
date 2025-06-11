@@ -2,9 +2,14 @@
 
 set -ex
 
-export AWS_PROFILE=mlops-club
-export SAGEMAKER_DOMAIN_ID=d-qt4dkqxcevqe
+export AWS_PROFILE=sandbox
 export AWS_REGION=us-east-1
+
+# unused for now
+export SAGEMAKER_DOMAIN_ID=d-qt4dkqxcevqe
+
+# disables an annoying cdk cli warning
+export JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1
 
 
 LAMBDA_FN_S3_BUCKET=sagemaker-test-bucket-mc

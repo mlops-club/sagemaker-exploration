@@ -8,11 +8,16 @@ from aws_cdk import aws_iam as iam
 # s3
 from aws_cdk import aws_s3 as s3
 
+
+
+
+
 # lambda fn
 from aws_cdk import aws_lambda as _lambda
 import aws_cdk as cdk
 
 VPC_NAME = "default"
+VPC_NAME = "local-virginia"
 
 
 class SagemakerDomainConstruct(Construct):
