@@ -12,6 +12,8 @@ readonly VERSION=0.51.1
 # Build version of Marquez
 readonly BUILD_VERSION=0.51.1
 
+THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 title() {
   echo -e "\033[1m${1}\033[0m"
 }
@@ -60,7 +62,9 @@ usage() {
 }
 
 # Change working directory to project root
-project_root=$(git rev-parse --show-toplevel)
+# project_root=$(git rev-parse --show-toplevel)
+project_root="${THIS_DIR}/.."
+echo "Project root: ${project_root}"
 cd "${project_root}/"
 
 # Base docker compose file
@@ -161,7 +165,7 @@ fi
 
 # Create docker volumes for Marquez
 if [[ "${NO_VOLUMES}" = "false" ]]; then
-  ./docker/volumes.sh $(basename "$project_root")
+  bash "./volumes.sh" $(basename "$project_root")
 fi
 
 # Enable search in UI an API if search container is enabled
