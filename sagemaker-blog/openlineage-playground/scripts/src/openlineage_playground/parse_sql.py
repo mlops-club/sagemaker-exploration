@@ -49,7 +49,16 @@ http_config = HttpConfig(
   compression=HttpCompression.GZIP,
 )
 
-client = OpenLineageClient(transport=HttpTransport(http_config))
+from openlineage.client import OpenLineageClient
+from openlineage.client.transport.amazon_datazone import AmazonDataZoneTransport, AmazonDataZoneConfig
+
+datazone_config = AmazonDataZoneConfig(
+  domain_id="dzd_d4qfrr8oni8w9z",
+)
+
+client = OpenLineageClient(transport=AmazonDataZoneTransport(datazone_config))
+
+# client = OpenLineageClient(transport=HttpTransport(http_config))
 
 
 

@@ -1,0 +1,10 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:sts::847068433460:assumed-role/AWSReservedSSO_AWSAdministratorAccess_32e455a75ec338cc/eric.riddoch@pattern.com" },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
