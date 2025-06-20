@@ -12,18 +12,19 @@ class FlowConfig(BaseModel):
     """Config for the flow--provides validation and autocompletion."""
 
     glue_database_name: str
+    glue_database_s3_bucket_name: str
 
 
-@pypi_base(
-    python="3.12",
-    packages={
-        "numpy": "1.26.3",
-        "pandas": "2.2.3",
-        "httpx": "0.28.1",
-        "snowflake-connector-python": "3.13.1",
-        "scikit-learn": "1.6.1",
-    },
-)
+# @pypi_base(
+#     python="3.12",
+#     packages={
+#         "numpy": "1.26.3",
+#         "pandas": "2.2.3",
+#         "httpx": "0.28.1",
+#         "snowflake-connector-python": "3.13.1",
+#         "scikit-learn": "1.6.1",
+#     },
+# )
 class ExtractLoadDataFlow(FlowSpec):
     """Flow to extract NYC taxi data from the TLC website and load it into Snowflake."""
 
@@ -57,37 +58,148 @@ class ExtractLoadDataFlow(FlowSpec):
         self.next(self.create_tables)
 
 
-    @pypi(packages={"awswrangler": ""})
+    # @pypi(packages={"awswrangler": ""})
     @step
     def create_tables(self):
+        """Create Iceberg table in Athena using raw SQL CREATE TABLE statement."""
+        import awswrangler as wr
+        import os
+
+        os.environ["AWS_PROFILE"] = "sandbox"
+        os.environ["AWS_REGION"] = "us-east-1"
+        os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
+
+        import boto3
+        print(boto3.client("sts").get_caller_identity())
         
-        create_yellow_table_stmt = """\
-        CREATE TABLE IF NOT EXISTS raw_yellow (
-            unique_row_id          text,
-            filename               text,
-            VendorID               text,
-            tpep_pickup_datetime   timestamp,
-            tpep_dropoff_datetime  timestamp,
-            passenger_count        integer,
-            trip_distance          double precision,
-            RatecodeID             text,
-            store_and_fwd_flag     text,
-            PULocationID           text,
-            DOLocationID           text,
-            payment_type           integer,
-            fare_amount            double precision,
-            extra                  double precision,
-            mta_tax                double precision,
-            tip_amount             double precision,
-            tolls_amount           double precision,
-            improvement_surcharge  double precision,
-            total_amount           double precision,
-            congestion_surcharge   double precision
-        );
+        # Define the Iceberg table creation SQL statement
+        create_yellow_table_stmt = f"""
+        CREATE TABLE IF NOT EXISTS {self.config.glue_database_name}.raw_yellow (
+            unique_row_id string,
+            filename string,
+            VendorID string,
+            tpep_pickup_datetime timestamp,
+            tpep_dropoff_datetime timestamp,
+            passenger_count int,
+            trip_distance double,
+            RatecodeID string,
+            store_and_fwd_flag string,
+            PULocationID string,
+            DOLocationID string,
+            payment_type int,
+            fare_amount double,
+            extra double,
+            mta_tax double,
+            tip_amount double,
+            tolls_amount double,
+            improvement_surcharge double,
+            total_amount double,
+            congestion_surcharge double
+        )
+        PARTITIONED BY (day(tpep_pickup_datetime))
+        LOCATION 's3://{self.config.glue_database_s3_bucket_name}/raw_yellow/'
+        TBLPROPERTIES (
+            'table_type' = 'ICEBERG',
+            'format' = 'parquet',
+            'write_compression' = 'snappy'
+        )
         """
         
+        try:
+            # Execute the CREATE TABLE statement using AWS Data Wrangler
+            result = wr.athena.start_query_execution(
+                sql=create_yellow_table_stmt,
+                database=self.config.glue_database_name,
+                wait=True
+            )
+            
+            print(f"Successfully created Iceberg table 'raw_yellow' in database '{self.config.glue_database_name}'")
+            print(f"Query execution ID: {result['QueryExecutionId']}")
+            print(f"Table location: s3://{self.config.glue_database_s3_bucket_name}/raw_yellow/")
+            
+        except Exception as e:
+            print(f"Error creating table: {str(e)}")
+            # Check if it's just because the table already exists
+            if "already exists" in str(e).lower():
+                print("Table already exists, which is expected with 'IF NOT EXISTS' clause.")
+            else:
+                raise e
 
+        self.next(self.upsert_yellow_taxi_data)
+
+    @pypi(packages={"awswrangler": ""})
+    @step
+    def upsert_yellow_taxi_data(self):
+        """Load and upsert yellow taxi data into the raw_yellow Iceberg table."""
+        import awswrangler as wr
+        import pandas as pd
+        import os
+        import uuid
+        from helpers.download_trip_data import DATA_DIR
+
+        os.environ["AWS_PROFILE"] = "sandbox"
+        os.environ["AWS_REGION"] = "us-east-1"
+        os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
+
+        # Find all downloaded yellow taxi CSV files
+        yellow_taxi_files = list(DATA_DIR.glob("*yellow_tripdata*.csv"))
+        
+        if not yellow_taxi_files:
+            print("No yellow taxi data files found to load.")
+            self.next(self.end)
+            return
+        
+        print(f"Found {len(yellow_taxi_files)} yellow taxi files to process")
+        
+        for file_path in yellow_taxi_files:
+            print(f"Processing file: {file_path.name}")
+            
+            try:
+                # Read the CSV file
+                df = pd.read_csv(file_path)
+                
+                # Add metadata columns
+                df['filename'] = file_path.name
+                df['unique_row_id'] = [str(uuid.uuid4()) for _ in range(len(df))]
+                
+                # Ensure proper data types for timestamp columns
+                timestamp_cols = ['tpep_pickup_datetime', 'tpep_dropoff_datetime']
+                for col in timestamp_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+                
+                # Handle any missing or null values that might cause issues
+                df = df.dropna(subset=['tpep_pickup_datetime'])  # Remove rows without pickup datetime
+                
+                if len(df) == 0:
+                    print(f"No valid data in {file_path.name} after cleaning")
+                    continue
+                
+                # Upsert data using merge functionality
+                wr.athena.to_iceberg(
+                    df=df,
+                    database=self.config.glue_database_name,
+                    table="raw_yellow",
+                    temp_path=f"s3://{self.config.glue_database_s3_bucket_name}/temp/",
+                    table_location=f"s3://{self.config.glue_database_s3_bucket_name}/raw_yellow/",
+                    partition_cols=["day(tpep_pickup_datetime)"],
+                    merge_cols=["unique_row_id"],  # Use unique_row_id as the merge key
+                    merge_condition="update",  # Update existing records if they match
+                    mode="append",
+                    keep_files=True
+                )
+                
+                print(f"Successfully upserted {len(df)} records from {file_path.name}")
+                
+            except Exception as e:
+                print(f"Error processing {file_path.name}: {str(e)}")
+                # Continue with next file instead of failing the entire step
+                continue
+        
+        print("Completed upserting yellow taxi data")
         self.next(self.end)
+
+    
 
 
     # @pypi(packages={"duckdb": "1.2.2"})

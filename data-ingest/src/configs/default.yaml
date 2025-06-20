@@ -1,4 +1,2 @@
-glue_database: xxx
-glue_database_s3_bucket_name: xxx
-
-
+glue_database_name: nyc_taxi
+glue_database_s3_bucket_name: nyc-taxi-datalake-glue-nyc-taxi
