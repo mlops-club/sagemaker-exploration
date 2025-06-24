@@ -27,6 +27,7 @@ cdk = [
     "constructs>=10.4.2",
 ]
 dev = [
+  "fireducks>=1.0.11",
   "jupyter",
   "mypy",
   "poethepoet",
@@ -34,7 +35,7 @@ dev = [
   "pre-commit",
   "pytest",
   "pytest-cov",
-  "ruff"
+  "ruff",
 ]
 eda = [
   "duckdb-engine>=0.17.0",

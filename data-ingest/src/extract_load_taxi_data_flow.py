@@ -1,7 +1,9 @@
-from metaflow import FlowSpec, card, current, pypi, pypi_base, step, Config
+from metaflow import FlowSpec, card, current, step, Config
 from metaflow.cards import ProgressBar
 from pydantic import BaseModel
 from pathlib import Path
+import pandas as pd
+import hashlib
 from helpers.validate_config import make_pydantic_parser_fn
 
 
@@ -15,16 +17,6 @@ class FlowConfig(BaseModel):
     glue_database_s3_bucket_name: str
 
 
-# @pypi_base(
-#     python="3.12",
-#     packages={
-#         "numpy": "1.26.3",
-#         "pandas": "2.2.3",
-#         "httpx": "0.28.1",
-#         "snowflake-connector-python": "3.13.1",
-#         "scikit-learn": "1.6.1",
-#     },
-# )
 class ExtractLoadDataFlow(FlowSpec):
     """Flow to extract NYC taxi data from the TLC website and load it into Snowflake."""
 
@@ -58,7 +50,6 @@ class ExtractLoadDataFlow(FlowSpec):
         self.next(self.create_tables)
 
 
-    # @pypi(packages={"awswrangler": ""})
     @step
     def create_tables(self):
         """Create Iceberg table in Athena using raw SQL CREATE TABLE statement."""
@@ -75,18 +66,21 @@ class ExtractLoadDataFlow(FlowSpec):
         # Define the Iceberg table creation SQL statement
         create_yellow_table_stmt = f"""
         CREATE TABLE IF NOT EXISTS {self.config.glue_database_name}.raw_yellow (
-            unique_row_id string,
+            -- we should really add an `ingest_ts` column as well
+               -- since it's so easy to accidentally get this ingest wrong and need to delete bad data
+            unique_row_id string, -- we calculate this col in Python before upserting
             filename string,
-            VendorID string,
+            ingest_timestamp timestamp, -- timestamp when data was ingested
+            vendorid int,
             tpep_pickup_datetime timestamp,
             tpep_dropoff_datetime timestamp,
-            passenger_count int,
+            passenger_count double,
             trip_distance double,
-            RatecodeID string,
+            ratecodeid double,
             store_and_fwd_flag string,
-            PULocationID string,
-            DOLocationID string,
-            payment_type int,
+            pulocationid int,
+            dolocationid int,
+            payment_type bigint,
             fare_amount double,
             extra double,
             mta_tax double,
@@ -94,7 +88,9 @@ class ExtractLoadDataFlow(FlowSpec):
             tolls_amount double,
             improvement_surcharge double,
             total_amount double,
-            congestion_surcharge double
+            congestion_surcharge double,
+            cbd_congestion_fee double,
+            airport_fee double
         )
         PARTITIONED BY (day(tpep_pickup_datetime))
         LOCATION 's3://{self.config.glue_database_s3_bucket_name}/raw_yellow/'
@@ -107,6 +103,16 @@ class ExtractLoadDataFlow(FlowSpec):
         
         try:
             # Execute the CREATE TABLE statement using AWS Data Wrangler
+            # result = wr.athena.start_query_execution(
+            #     sql=f"""DELETE FROM {self.config.glue_database_name}.raw_yellow WHERE TRUE;""",
+            #     database=self.config.glue_database_name,
+            #     wait=True
+            # )
+            # result = wr.athena.start_query_execution(
+            #     sql=f"""DROP TABLE IF EXISTS {self.config.glue_database_name}.raw_yellow;""",
+            #     database=self.config.glue_database_name,
+            #     wait=True
+            # )
             result = wr.athena.start_query_execution(
                 sql=create_yellow_table_stmt,
                 database=self.config.glue_database_name,
@@ -127,11 +133,11 @@ class ExtractLoadDataFlow(FlowSpec):
 
         self.next(self.upsert_yellow_taxi_data)
 
-    @pypi(packages={"awswrangler": ""})
     @step
     def upsert_yellow_taxi_data(self):
         """Load and upsert yellow taxi data into the raw_yellow Iceberg table."""
         import awswrangler as wr
+        # import fireducks.pandas as pd
         import pandas as pd
         import os
         import uuid
@@ -141,98 +147,99 @@ class ExtractLoadDataFlow(FlowSpec):
         os.environ["AWS_REGION"] = "us-east-1"
         os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
 
-        # Find all downloaded yellow taxi CSV files
-        yellow_taxi_files = list(DATA_DIR.glob("*yellow_tripdata*.csv"))
+        # Find all downloaded yellow taxi parquet files
+        yellow_taxi_dir = DATA_DIR / "yellow"
+        yellow_taxi_files = list(yellow_taxi_dir.glob("*.parquet"))
         
         if not yellow_taxi_files:
-            print("No yellow taxi data files found to load.")
+            print("No yellow taxi parquet files found to load.")
             self.next(self.end)
             return
         
-        print(f"Found {len(yellow_taxi_files)} yellow taxi files to process")
+        print(f"Found {len(yellow_taxi_files)} yellow taxi parquet files to process")
         
         for file_path in yellow_taxi_files:
             print(f"Processing file: {file_path.name}")
             
             try:
-                # Read the CSV file
-                df = pd.read_csv(file_path)
+                # Read the parquet file
+                df = pd.read_parquet(file_path)
+                df.rename(columns=lambda x: x.lower(), inplace=True)  # Ensure all columns are lowercase
                 
                 # Add metadata columns
                 df['filename'] = file_path.name
-                df['unique_row_id'] = [str(uuid.uuid4()) for _ in range(len(df))]
-                
-                # Ensure proper data types for timestamp columns
-                timestamp_cols = ['tpep_pickup_datetime', 'tpep_dropoff_datetime']
-                for col in timestamp_cols:
-                    if col in df.columns:
-                        df[col] = pd.to_datetime(df[col], errors='coerce')
-                
-                # Handle any missing or null values that might cause issues
-                df = df.dropna(subset=['tpep_pickup_datetime'])  # Remove rows without pickup datetime
-                
-                if len(df) == 0:
-                    print(f"No valid data in {file_path.name} after cleaning")
-                    continue
-                
+                df['ingest_timestamp'] = pd.Timestamp.now(tz='UTC').floor('S').tz_localize(None)
+
+                # Assign the result
+                hashed_columns = [
+                    'vendorid', 'tpep_pickup_datetime', 'tpep_dropoff_datetime',
+                    'pulocationid', 'dolocationid', 'fare_amount', 'trip_distance',
+                    'total_amount', 'improvement_surcharge', 'congestion_surcharge',
+                    'airport_fee', 'cbd_congestion_fee', 'passenger_count', 'ratecodeid',
+                    'store_and_fwd_flag', 'payment_type'
+                ]
+                df['unique_row_id'] = fast_md5_hash(df, hashed_columns=hashed_columns)
+
+                df.drop_duplicates(inplace=True)
+
+                temp_path = f"s3://{self.config.glue_database_s3_bucket_name}/temp/{uuid.uuid4()}/"
+
+                # NOTE: WAP would have saved me here. My IDs weren't unique enough because
+                # even with all the fields I hashed, total_amount was still different between
+                # otherwise *completely identical rows*. If I had done a WAP, I could have
+                # run a query to assert that the incoming parquet file's unique_row_id's were
+                # ACTUALLY unique when compared to the entire existing table. That could be done
+                # on a branch and then rejected if the IDs were not unique.
+
                 # Upsert data using merge functionality
                 wr.athena.to_iceberg(
                     df=df,
                     database=self.config.glue_database_name,
                     table="raw_yellow",
-                    temp_path=f"s3://{self.config.glue_database_s3_bucket_name}/temp/",
-                    table_location=f"s3://{self.config.glue_database_s3_bucket_name}/raw_yellow/",
+                    temp_path=temp_path,
+                    table_location=f"s3://{self.config.glue_database_s3_bucket_name}/{self.config.glue_database_name}/raw_yellow/",
                     partition_cols=["day(tpep_pickup_datetime)"],
-                    merge_cols=["unique_row_id"],  # Use unique_row_id as the merge key
+                    merge_cols=["unique_row_id"],  # merge on all columns # Use unique_row_id as the merge key
+                    # merge_cols=list(df.columns.str.lower()),  # merge on all columns # Use unique_row_id as the merge key
                     merge_condition="update",  # Update existing records if they match
                     mode="append",
-                    keep_files=True
+                    # keep_files=True
                 )
+
+                print(f"Deleting objects as temporary path {temp_path} ...", sep="")
+                wr.s3.delete_objects(path=temp_path)
+                print("Objects deleted")
                 
                 print(f"Successfully upserted {len(df)} records from {file_path.name}")
                 
             except Exception as e:
                 print(f"Error processing {file_path.name}: {str(e)}")
                 # Continue with next file instead of failing the entire step
-                continue
+                raise e
         
         print("Completed upserting yellow taxi data")
         self.next(self.end)
-
-    
-
-
-    # @pypi(packages={"duckdb": "1.2.2"})
-    # @step
-    # def load_data_into_duckdb(self):
-    #     """Load the downloaded data into a DuckDB database."""
-    #     from helpers.create_duckdb import create_all_tables
-    #     from helpers.download_trip_data import DATA_DIR
-
-    #     create_all_tables(data_dir=DATA_DIR, db_path=DATA_DIR / "nyc_taxi_data.duckdb")
-    #     self.next(self.end)
-
-    # form each of the 4 sets of tables into a duckdb database
-
-    # @pypi(packages={"snowflake-connector-python": "3.12.2"})
-    # @step
-    # def upload_data_to_s3(self):
-    #     print("SampleSnowflakeFlow is starting.")
-    #     from metaflow import Snowflake
-
-    #     with Snowflake(integration="outerbounds-snowflake-prod-integration") as cn:
-    #         print("Connected to Snowflake using static")
-
-    #         cursor = cn.cursor()
-    #         cursor.execute("SELECT CURRENT_ROLE()")
-    #         current_role = cursor.fetchone()[0]
-    #         print(f"Current role: {current_role}")
-    #     self.next(self.end)
 
     @step
     def end(self):
         """End the flow."""
         ...
+
+
+def fast_md5_hash(df: pd.DataFrame, hashed_columns: list[str]) -> pd.Series:
+    """Vectorized MD5 hash from concatenated string of selected columns."""
+    
+    # Lowercase column names for uniformity (optional, if source is inconsistent)
+    df_renamed = df.rename(columns={col: col.lower() for col in hashed_columns})
+    
+    # Fill NaNs and convert to string
+    str_cols = df_renamed[[col.lower() for col in hashed_columns]].fillna('').astype(str)
+    
+    # Concatenate all fields into a single string per row
+    concat_series = str_cols.agg(''.join, axis=1)
+    
+    # Hash each row's string using MD5
+    return concat_series.map(lambda x: hashlib.md5(x.encode('utf-8')).hexdigest())
 
 
 if __name__ == "__main__":

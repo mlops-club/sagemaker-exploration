@@ -24,8 +24,12 @@ function cdk_destroy () {
     uv run -- cdk destroy --app 'python cdk_app.py' '*' --profile $AWS_PROFILE --region $AWS_REGION
 }
 
-function flow() {
-    uv run ./src/extract_load_data_flow.py --environment=local ${@}
+function taxi_flow() {
+    uv run ./src/extract_load_taxi_data_flow.py --environment=local ${@}
+}
+
+function weather_flow() {
+    uv run ./src/extract_load_weather_data_flow.py --environment=local ${@}
 }
 
 # sometimes you need to do this if the cdk python library is newer than the CLI can handle

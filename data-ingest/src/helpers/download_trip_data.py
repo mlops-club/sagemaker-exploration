@@ -41,7 +41,7 @@ def make_outfile_fpath(
     extension: str,
     base_dir: Path = DATA_DIR,
 ) -> Path:
-    return base_dir / trip_type / f"{year}-{month:02d}.{extension}"
+    return base_dir / "nyc" / trip_type / f"{year}-{month:02d}.{extension}"
 
 
 def download_last_n_months_of_data_if_not_already_downloaded(
