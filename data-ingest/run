@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+
+# docs: https://aws.amazon.com/blogs/machine-learning/build-an-end-to-end-mlops-pipeline-using-amazon-sagemaker-pipelines-github-and-github-actions/
+
+set -e
+
+export AWS_PROFILE=sandbox
+export AWS_REGION=us-east-1
+
+# disables an annoying cdk cli warning
+export JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1
+
+# aws account id/hash used to make a unique, but consistent bucket name
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --profile ${AWS_PROFILE} --query "Account" --output text)
+export AWS_ACCOUNT_ID_HASH=$(echo -n "${AWS_ACCOUNT_ID}" | sha256sum | cut -c5-8)
+
+# hash the acct id and take the first 8 characters
+export S3_DATA_LAKE_BUCKET_NAME="airflow-metaflow-${AWS_ACCOUNT_ID_HASH}"
+export GLUE_DATABASE="nyc_taxi"
+
+
+THIS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+
+function cdk_bootstrap () {
+    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    cdk bootstrap "aws://${AWS_ACCOUNT_ID}/${AWS_REGION}"
+}
+
+function cdk_deploy () {
+    uv run -- cdk deploy --app 'python cdk_app.py' '*' --profile $AWS_PROFILE --region $AWS_REGION
+}
+
+function cdk_destroy () {
+    uv run -- cdk destroy --app 'python cdk_app.py' '*' --profile $AWS_PROFILE --region $AWS_REGION
+}
+
+
+function generate-metaflow-config() {
+    config_fpath="${THIS_DIR}/src/configs/default.yaml"
+
+    cat > "${config_fpath}" << EOF
+# this file is auto-generaged by 'bash run.sh generate-metaflow-config'
+glue_database_name: "${GLUE_DATABASE}"
+glue_database_s3_bucket_name: "${S3_DATA_LAKE_BUCKET_NAME}"
+EOF
+    echo "Generated ${config_fpath} with:"
+    echo "  Glue Database: ${GLUE_DATABASE}"
+    echo "  S3 Bucket: ${S3_DATA_LAKE_BUCKET_NAME}"
+    echo "  AWS Region: ${AWS_REGION}"
+}
+
+
+function taxi_flow() {
+    generate-metaflow-config
+
+    export OPENLINEAGE__TRANSPORT__TYPE="http"
+    export OPENLINEAGE__TRANSPORT__URL="http://localhost:8080"
+    export OPENLINEAGE__TRANSPORT__ENDPOINT="/openapi/openlineage/api/v1/lineage"
+    # export OPENLINEAGE__TRANSPORT__COMPRESSION="gzip" # Datahub cannot receive gzip compressed events
+    export OPENLINEAGE__TRANSPORT__VERIFY="false"
+    export OPENLINEAGE__TRANSPORT__TIMEOUT="30"
+    export OPENLINEAGE_CLIENT_LOGGING="DEBUG"
+
+    uv run ./src/extract_load_taxi_data_flow.py --environment=local ${@}
+}
+
+function weather_flow() {
+    uv run ./src/extract_load_weather_data_flow.py --environment=local ${@}
+}
+
+# sometimes you need to do this if the cdk python library is newer than the CLI can handle
+function upgrade_cdk_cli() {
+    npm uninstall -g aws-cdk
+    npm install -g aws-cdk
+}
+
+time "${@}"

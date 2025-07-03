@@ -1,2 +1,3 @@
-glue_database_name: nyc_taxi
-glue_database_s3_bucket_name: nyc-taxi-datalake-glue-nyc-taxi
+# this file is auto-generaged by 'bash run.sh generate-metaflow-config'
+glue_database_name: "nyc_taxi"
+glue_database_s3_bucket_name: "airflow-metaflow-6721"

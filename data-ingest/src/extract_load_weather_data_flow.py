@@ -60,7 +60,7 @@ class ExtractLoadWeatherDataFlow(FlowSpec):
 
         import boto3
         print(boto3.client("sts").get_caller_identity())
-        
+
         # Define a single Iceberg table for all weather data
         create_table_stmt = f"""
         CREATE TABLE IF NOT EXISTS {self.config.glue_database_name}.raw_weather (
@@ -89,7 +89,7 @@ class ExtractLoadWeatherDataFlow(FlowSpec):
             'write_compression' = 'snappy'
         )
         """
-        
+
         try:
             # Drop the table first to ensure clean schema
             drop_table_stmt = f"DROP TABLE IF EXISTS {self.config.glue_database_name}.raw_weather"
@@ -99,17 +99,17 @@ class ExtractLoadWeatherDataFlow(FlowSpec):
                 wait=True
             )
             print("Dropped existing table 'raw_weather' if it existed")
-            
+
             result = wr.athena.start_query_execution(
                 sql=create_table_stmt,
                 database=self.config.glue_database_name,
                 wait=True
             )
-            
+
             print(f"Successfully created Iceberg table 'raw_weather' in database '{self.config.glue_database_name}'")
             print(f"Query execution ID: {result['QueryExecutionId']}")
             print(f"Table location: s3://{self.config.glue_database_s3_bucket_name}/raw_weather/")
-            
+
         except Exception as e:
             print(f"Error creating table: {str(e)}")
             # Check if it's just because the table already exists
@@ -136,40 +136,40 @@ class ExtractLoadWeatherDataFlow(FlowSpec):
         # Process each measurement type
         for measurement in MEASUREMENT_TYPES:
             measurement_dir = DATA_DIR / "weather" / measurement
-            
+
             if not measurement_dir.exists():
                 print(f"No {measurement} directory found. Skipping.")
                 continue
-                
+
             csv_files = list(measurement_dir.glob("*.csv"))
-            
+
             if not csv_files:
                 print(f"No {measurement} CSV files found to load.")
                 continue
-            
+
             print(f"Found {len(csv_files)} {measurement} CSV files to process")
-            
+
             # Collect all dataframes for this measurement type
             all_dataframes = []
-            
+
             for file_path in csv_files:
                 print(f"Reading file: {file_path.name}")
-                
+
                 try:
                     # Read the CSV file - no header row expected based on the format description
                     df = pd.read_csv(file_path, header=None)
-                    
+
                     # Based on the format description, assign proper column names
                     # Columns: region_type, region_code, region_name, year, month, meteorological_element, day1-31
                     column_names = ['region_type', 'region_code', 'region_name', 'year', 'month', 'meteorological_element'] + \
                                   [f'day_{i:02d}' for i in range(1, 32)]
-                    
+
                     df.columns = column_names
-                    
+
                     # Add metadata columns
                     df['filename'] = file_path.name
                     df['ingest_timestamp'] = pd.Timestamp.now(tz='UTC').floor('S').tz_localize(None)
-                    
+
                     # Convert -999.99 values to NaN (these represent non-existent days)
                     # Ensure all day columns are consistently typed as float64
                     day_columns = [f'day_{i:02d}' for i in range(1, 32)]
@@ -179,43 +179,43 @@ class ExtractLoadWeatherDataFlow(FlowSpec):
                         df[col] = df[col].replace(-999.99, None)
                         # Explicitly cast to float64 to ensure consistency
                         df[col] = df[col].astype('float64')
-                    
+
                     all_dataframes.append(df)
                     print(f"Successfully read {len(df)} records from {file_path.name}")
-                    
+
                 except Exception as e:
                     print(f"Error processing {file_path.name}: {str(e)}")
                     raise e
-            
+
             if not all_dataframes:
                 print(f"No dataframes to process for {measurement}")
                 continue
-            
+
             # Concatenate all dataframes for this measurement type
             print(f"Concatenating all {measurement} dataframes...")
             combined_df = pd.concat(all_dataframes, ignore_index=True)
             print(f"Combined {measurement} dataframe has {len(combined_df)} total records")
-            
+
             # Create unique row ID for deduplication
             hashed_columns = ['region_type', 'region_code', 'year', 'month', 'meteorological_element']
             combined_df['unique_row_id'] = fast_md5_hash(combined_df, hashed_columns=hashed_columns)
-            
+
             # Remove duplicates
             initial_count = len(combined_df)
             combined_df.drop_duplicates(subset=['unique_row_id'], inplace=True)
             final_count = len(combined_df)
             if initial_count != final_count:
                 print(f"Removed {initial_count - final_count} duplicate records for {measurement}")
-            
+
             temp_path = f"s3://{self.config.glue_database_s3_bucket_name}/temp/{uuid.uuid4()}/"
-            
+
             print(f"Performing bulk upsert for {measurement} data to Iceberg table...")
-            
+
             # Ensure all object columns are strings to avoid type issues
             for col in combined_df.select_dtypes(include=['object']).columns:
                 if col not in ['filename', 'region_type', 'region_name', 'meteorological_element', 'unique_row_id']:
                     combined_df[col] = combined_df[col].astype(str)
-            
+
             # Single bulk upsert operation for this measurement type
             wr.athena.to_iceberg(
                 df=combined_df,
@@ -231,13 +231,13 @@ class ExtractLoadWeatherDataFlow(FlowSpec):
                     'ingest_timestamp': 'timestamp'
                 }
             )
-            
+
             print(f"Deleting objects at temporary path {temp_path} ...")
             wr.s3.delete_objects(path=temp_path)
             print("Objects deleted")
-            
+
             print(f"Successfully upserted {len(combined_df)} {measurement} records in a single bulk operation")
-        
+
         print("Completed upserting all weather data")
         self.next(self.end)
 

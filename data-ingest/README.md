@@ -60,15 +60,15 @@ The DE Zoomcamp folks created that column [like this](https://github.com/DataTal
 
 ```sql
 UPDATE {{render(vars.staging_table)}}
-SET 
+SET
 unique_row_id = md5(
     COALESCE(CAST(VendorID AS text), '') ||
-    COALESCE(CAST(tpep_pickup_datetime AS text), '') || 
-    COALESCE(CAST(tpep_dropoff_datetime AS text), '') || 
-    COALESCE(PULocationID, '') || 
-    COALESCE(DOLocationID, '') || 
-    COALESCE(CAST(fare_amount AS text), '') || 
-    COALESCE(CAST(trip_distance AS text), '')      
+    COALESCE(CAST(tpep_pickup_datetime AS text), '') ||
+    COALESCE(CAST(tpep_dropoff_datetime AS text), '') ||
+    COALESCE(PULocationID, '') ||
+    COALESCE(DOLocationID, '') ||
+    COALESCE(CAST(fare_amount AS text), '') ||
+    COALESCE(CAST(trip_distance AS text), '')  
 ),
 filename = '{{render(vars.file)}}';
 ```
@@ -96,7 +96,7 @@ But then on the next 2 files (I was only doing 3 files total so this happened on
 
 Annoying :/
 
-Maybe my "unique IDs" aren't so unique. 
+Maybe my "unique IDs" aren't so unique.
 
 Maybe that's because I'm doing the calculation of the ID wrong... or maybe there are a lot of NULLs in the parquet files.
 
@@ -134,11 +134,11 @@ hash function--or simply not created a unique id and instead merged on all colum
 
 ![alt text](image-1.png)
 
-Write-audit-publish would have prevented this. 
+Write-audit-publish would have prevented this.
 
 My IDs weren't unique enough because
 even with all the fields I hashed, total_amount was still different between
-otherwise *completely identical rows*. 
+otherwise *completely identical rows*.
 
 If I had done a WAP, I could have
 run a query to assert that the incoming parquet file's `unique_row_id`'s were
@@ -152,7 +152,7 @@ I **really** should add an `ingest_timestamp` column to the dataset.
 Otherwise, if you get something wrong, how on earth would you discover which rows
 you need to delete out of the table!
 
-<!-- 
+<!--
 
 What hiring managers want to see:
 

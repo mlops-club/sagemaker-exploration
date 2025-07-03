@@ -19,7 +19,7 @@ MEASUREMENT_TYPES: list[TMeasurementTypes] = ["prcp", "tavg", "tmin", "tmax"]
 
 MEASUREMENT_NAMES = {
     "prcp": "precipitation",
-    "tavg": "average_temperature", 
+    "tavg": "average_temperature",
     "tmin": "min_temperature",
     "tmax": "max_temperature"
 }
@@ -28,7 +28,7 @@ MEASUREMENT_NAMES = {
 def make_download_weather_url(year: int, month: int, measurement: TMeasurementTypes) -> str:
     """
     Create download URL for weather data.
-    
+
     Format: https://www.ncei.noaa.gov/pub/data/daily-grids/v1-0-0/averages/yyyy/{measurement}-yyyymm-cty-scaled.csv
     """
     return f"https://www.ncei.noaa.gov/pub/data/daily-grids/v1-0-0/averages/{year}/{measurement}-{year}{month:02d}-cty-scaled.csv"
@@ -87,7 +87,7 @@ def download_specific_month(
     """Download weather data for specific measurements and month."""
     if measurements is None:
         measurements = MEASUREMENT_TYPES
-    
+
     for measurement in measurements:
         download_month_if_not_already_downloaded(year, month, measurement)
 
